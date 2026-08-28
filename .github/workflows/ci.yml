@@ -31,7 +31,6 @@ jobs:
         run: |
           python -m compileall .
 
-
   unit-test:
     needs: build
     runs-on: ubuntu-latest
@@ -125,15 +124,52 @@ jobs:
         run: |
           docker load -i github-actions-demo.tar
 
-      - name: Scan Docker image
+      - name: Trivy Image Scan
+        id: trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: github-actions-demo:${{ github.sha }}
-          format: table
+          format: json
+          output: trivy-report.json
           severity: CRITICAL,HIGH
           exit-code: 1
 
+      - name: Add Trivy results to GitHub Summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## 🔐 Trivy Image Security Scan" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -f trivy-report.json ]; then
+            echo "❌ Trivy report was not generated." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          jq -r '
+            [
+              .Results[]?.Vulnerabilities[]?
+              | select(.Severity == "HIGH" or .Severity == "CRITICAL")
+            ] as $vulns
+            |
+            if ($vulns | length) == 0 then
+              "✅ No HIGH or CRITICAL vulnerabilities found."
+            else
+              "### ❌ Found \($vulns | length) HIGH/CRITICAL vulnerabilities\n\n" +
+              "| Severity | CVE | Package | Installed | Fixed Version |\n" +
+              "|---|---|---|---|---|\n" +
+              (
+                $vulns
+                | map(
+                    "| \(.Severity) | \(.VulnerabilityID) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion // "Not available") |"
+                  )
+                | join("\n")
+              )
+            end
+          ' trivy-report.json >> "$GITHUB_STEP_SUMMARY"
+
   push-ecr:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: trivy-image
     runs-on: ubuntu-latest
 
